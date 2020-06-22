@@ -1,13 +1,20 @@
 use super::{
     a_scope::{ADefFunc, ADefFuncData, AModule, AModuleData},
-    a_symbol::ASymbolData,
-    ALoc, AScope, ASymbol, ASymbolKind,
+    a_symbol::{ASymbolData, ASymbolOutline},
+    integrate::AWsScope,
+    ADoc, ALoc, APos, AScope, ASymbol, ASymbolKind,
 };
-use crate::{parse::*, token::TokenKind, utils::rc_str::RcStr};
+use crate::{
+    parse::*,
+    token::TokenKind,
+    utils::{id::Id, rc_str::RcStr},
+};
 use std::mem::{replace, take};
 
+pub(crate) type ACandidate = Id<ACandidateData>;
+
 #[derive(Copy, Clone, Debug)]
-enum ACandidateKind {
+pub(crate) enum ACandidateKind {
     Label,
     Command,
     VarOrArray,
@@ -15,11 +22,18 @@ enum ACandidateKind {
 }
 
 #[derive(Debug)]
-struct ACandidateData {
+pub(crate) struct ACandidateData {
     kind: ACandidateKind,
     name: RcStr,
     loc: ALoc,
     scope: AScope,
+}
+
+#[derive(Copy, Clone)]
+pub(crate) enum ASymbolOrCandidate {
+    Symbol(ASymbol),
+    DefCandidate(ACandidate),
+    UseCandidate(ACandidate),
 }
 
 /// Analysis context.
@@ -271,7 +285,7 @@ fn on_stmt(stmt: &PStmt, ax: &mut Ax) {
             kind,
             privacy_opt,
             name_opt,
-            onexit_opt,
+            onexit_opt: _,
             params,
             stmts,
             behind,
@@ -280,21 +294,19 @@ fn on_stmt(stmt: &PStmt, ax: &mut Ax) {
             let deffunc = ADefFunc::new(ax.deffuncs.len());
             ax.deffuncs.push(ADefFuncData {
                 kind: *kind,
-                name_opt: None,
+                symbol_opt: None,
                 keyword_loc: keyword.body.loc.clone(),
                 content_loc: hash.body.loc.unite(behind),
             });
 
             if let Some(name) = name_opt {
-                ax.deffuncs[deffunc.get()].name_opt = Some(name.body.text.clone());
+                let privacy = match privacy_opt {
+                    Some((privacy, _)) => *privacy,
+                    None => PPrivacy::Global,
+                };
 
-                if onexit_opt.is_none() {
-                    let privacy = match privacy_opt {
-                        Some((privacy, _)) => *privacy,
-                        None => PPrivacy::Global,
-                    };
-                    ax.add_symbol(ASymbolKind::CommandOrFunc, name, privacy, hash);
-                }
+                let symbol = ax.add_symbol(ASymbolKind::CommandOrFunc, name, privacy, hash);
+                ax.deffuncs[deffunc.get()].symbol_opt = Some(symbol);
             }
 
             let parent_deffunc = replace(&mut ax.deffunc_opt, Some(deffunc));
@@ -374,7 +386,7 @@ fn on_stmt(stmt: &PStmt, ax: &mut Ax) {
         }) => {
             let module = AModule::from(ax.modules.len());
             ax.modules.push(AModuleData {
-                name_opt: None,
+                symbol_opt: None,
                 keyword_loc: keyword.body.loc.clone(),
                 content_loc: hash.body.loc.unite(&behind),
             });
@@ -383,17 +395,18 @@ fn on_stmt(stmt: &PStmt, ax: &mut Ax) {
             let parent_module_opt = replace(&mut ax.module_opt, Some(module));
 
             if let Some(name) = name_opt {
-                ax.modules[module.get()].name_opt = Some(name.body.text.clone());
-
-                match name.kind() {
+                let symbol_opt = match name.kind() {
                     TokenKind::Ident => {
-                        ax.add_symbol(ASymbolKind::Module, name, PPrivacy::Global, hash);
+                        Some(ax.add_symbol(ASymbolKind::Module, name, PPrivacy::Global, hash))
                     }
                     TokenKind::Str => {
                         // FIXME: 識別子として有効な文字列ならシンボルとして登録できる。
+                        None
                     }
-                    _ => {}
-                }
+                    _ => None,
+                };
+
+                ax.modules[module.get()].symbol_opt = symbol_opt;
             }
 
             for field in fields.iter().filter_map(|param| param.name_opt.as_ref()) {
@@ -420,6 +433,28 @@ pub(crate) struct AAnalysis {
     use_candidates: Vec<ACandidateData>,
     deffuncs: Vec<ADefFuncData>,
     modules: Vec<AModuleData>,
+}
+
+impl AAnalysis {
+    pub(crate) fn locate_symbol(&self, loc: ALoc) -> Option<ASymbolOrCandidate> {
+        None
+    }
+
+    pub(crate) fn collect_nonlocal_symbols(
+        &self,
+        doc: ADoc,
+        symbols: &mut Vec<(ASymbol, ASymbolKind, AWsScope)>,
+    ) {
+        for (i, symbol_data) in self.symbols.iter().enumerate() {
+            let ws_scope = AWsScope::from_scope(doc, &symbol_data.scope);
+            if ws_scope.is_local_to_file() {
+                continue;
+            }
+
+            let symbol = ASymbol::new(i);
+            symbols.push((symbol, symbol_data.kind, ws_scope));
+        }
+    }
 }
 
 pub(crate) fn analyze(root: &PRoot) -> AAnalysis {

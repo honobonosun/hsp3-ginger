@@ -1,4 +1,4 @@
-use super::{ALoc, AScope};
+use super::{ADoc, ALoc, AScope};
 use crate::utils::{id::Id, rc_str::RcStr};
 
 #[allow(unused)]
@@ -37,6 +37,13 @@ pub(crate) struct ASymbolData {
     pub(crate) def_sites: Vec<ALoc>,
     pub(crate) use_sites: Vec<ALoc>,
     pub(crate) comments: Vec<RcStr>,
+    pub(crate) scope: AScope,
+}
+
+pub(crate) struct ASymbolOutline {
+    pub(crate) doc: ADoc,
+    pub(crate) kind: ASymbolKind,
+    pub(crate) name: RcStr,
     pub(crate) scope: AScope,
 }
 
